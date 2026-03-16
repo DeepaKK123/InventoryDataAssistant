@@ -1,0 +1,150 @@
+* ============================================================
+* PROCESS.ORDER
+* ============================================================
+* Create or update an ORDERS record.
+* Validates inventory availability, writes the order, and
+* updates INVENTORY quantities atomically.
+*
+* Arguments:
+*   ARG(1) = INPUT.DATA  : VM-delimited
+*              [0] ACTION      — "CREATE" or "UPDATE"
+*              [1] ORDER.ID
+*              [2] CUST.ID
+*              [3] ITEM.IDS    — comma-separated list
+*              [4] QUANTITIES  — comma-separated list
+*   ARG(2) = OUTPUT.DATA : VM-delimited
+*              [0] ORDER.ID
+*              [1] STATUS.MSG
+*              [2] TOTAL.AMT
+*   ARG(3) = STATUS      : "OK" or "ERROR:<message>"
+* ============================================================
+
+SUBROUTINE PROCESS.ORDER(INPUT.DATA, OUTPUT.DATA, STATUS)
+
+   VM    = CHAR(253)
+   TODAY = DATE()
+
+   * ── Parse input ─────────────────────────────────────────
+   ACTION    = FIELD(INPUT.DATA, VM, 1)
+   ORDER.ID  = FIELD(INPUT.DATA, VM, 2)
+   CUST.ID   = FIELD(INPUT.DATA, VM, 3)
+   ITEM.LIST = FIELD(INPUT.DATA, VM, 4)   ;* comma-separated
+   QTY.LIST  = FIELD(INPUT.DATA, VM, 5)   ;* comma-separated
+
+   IF ORDER.ID = "" OR CUST.ID = "" THEN
+      STATUS = "ERROR:ORDER.ID and CUST.ID are required"
+      RETURN
+   END
+
+   IF ACTION = "" THEN ACTION = "CREATE"
+   ACTION = OCONV(ACTION, "MCU")
+
+   * ── Open files ───────────────────────────────────────────
+   OPEN "ORDERS"    TO ORDERS.FILE ELSE
+      STATUS = "ERROR:Cannot open ORDERS file"
+      RETURN
+   END
+
+   OPEN "INVENTORY" TO INV.FILE ELSE
+      STATUS = "ERROR:Cannot open INVENTORY file"
+      CLOSE ORDERS.FILE
+      RETURN
+   END
+
+   OPEN "CUSTOMER"  TO CUST.FILE ELSE
+      STATUS = "ERROR:Cannot open CUSTOMER file"
+      CLOSE ORDERS.FILE
+      CLOSE INV.FILE
+      RETURN
+   END
+
+   * ── Validate customer ────────────────────────────────────
+   READ CUST.REC FROM CUST.FILE, CUST.ID ELSE
+      STATUS = "ERROR:Customer ":CUST.ID:" does not exist"
+      CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+      RETURN
+   END
+
+   ACCT.STATUS = CUST.REC<9>
+   IF ACCT.STATUS = "SUSPENDED" OR ACCT.STATUS = "CLOSED" THEN
+      STATUS = "ERROR:Customer ":CUST.ID:" account is ":ACCT.STATUS
+      CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+      RETURN
+   END
+
+   * ── For UPDATE, read existing order ──────────────────────
+   IF ACTION = "UPDATE" THEN
+      READ EXISTING.REC FROM ORDERS.FILE, ORDER.ID ELSE
+         STATUS = "ERROR:Order ":ORDER.ID:" not found for UPDATE"
+         CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+         RETURN
+      END
+   END
+
+   * ── Process each line item ───────────────────────────────
+   NUM.ITEMS   = DCOUNT(ITEM.LIST, ",")
+   TOTAL.AMT   = 0
+   MV.ITEMS    = ""
+   MV.QTYS     = ""
+   MV.PRICES   = ""
+
+   FOR I = 1 TO NUM.ITEMS
+      ITEM.ID  = TRIM(FIELD(ITEM.LIST, ",", I))
+      ITEM.QTY = TRIM(FIELD(QTY.LIST,  ",", I))
+
+      IF ITEM.ID = "" THEN CONTINUE
+
+      * Read inventory record
+      READ INV.REC FROM INV.FILE, ITEM.ID ELSE
+         STATUS = "ERROR:Item ":ITEM.ID:" not found in INVENTORY"
+         CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+         RETURN
+      END
+
+      UNIT.PRICE = INV.REC<3>
+      ON.HAND    = INV.REC<4>
+
+      * Check stock
+      IF NUM(ITEM.QTY) AND NUM(ON.HAND) THEN
+         IF ON.HAND + 0 < ITEM.QTY + 0 THEN
+            STATUS = "ERROR:Insufficient stock for ":ITEM.ID:
+                   : " (requested=":ITEM.QTY:" available=":ON.HAND:")"
+            CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+            RETURN
+         END
+
+         * Deduct from inventory
+         INV.REC<4> = ON.HAND - ITEM.QTY
+         WRITE INV.REC TO INV.FILE, ITEM.ID
+      END
+
+      * Accumulate totals
+      LINE.TOTAL = UNIT.PRICE * ITEM.QTY
+      TOTAL.AMT  = TOTAL.AMT + LINE.TOTAL
+
+      MV.ITEMS<1,-1>  = ITEM.ID
+      MV.QTYS<1,-1>   = ITEM.QTY
+      MV.PRICES<1,-1> = UNIT.PRICE
+   NEXT I
+
+   * ── Build and write order record ─────────────────────────
+   ORDER.REC = ""
+   ORDER.REC<1> = CUST.ID
+   ORDER.REC<2> = OCONV(TODAY, "D4/")   ;* e.g. 01/15/2025
+   ORDER.REC<3> = "OPEN"
+   ORDER.REC<4> = MV.ITEMS
+   ORDER.REC<5> = MV.QTYS
+   ORDER.REC<6> = MV.PRICES
+   ORDER.REC<7> = TOTAL.AMT
+
+   WRITE ORDER.REC TO ORDERS.FILE, ORDER.ID
+
+   CLOSE ORDERS.FILE ; CLOSE INV.FILE ; CLOSE CUST.FILE
+
+   * ── Pack output ──────────────────────────────────────────
+   STATUS.MSG  = ACTION:" completed for order ":ORDER.ID
+   OUTPUT.DATA = ORDER.ID  :VM: STATUS.MSG :VM: TOTAL.AMT
+
+   STATUS = "OK"
+   RETURN
+END

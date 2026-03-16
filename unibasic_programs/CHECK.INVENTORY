@@ -1,0 +1,72 @@
+* ============================================================
+* CHECK.INVENTORY
+* ============================================================
+* Retrieve stock information for a single INVENTORY item.
+*
+* Arguments:
+*   ARG(1) = INPUT.DATA   : [0]=ITEM.ID
+*   ARG(2) = OUTPUT.DATA  : VM-delimited inventory fields
+*   ARG(3) = STATUS       : "OK" or "ERROR:<message>"
+*
+* INVENTORY record layout:
+*   1  DESCRIPTION
+*   2  CATEGORY
+*   3  UNIT.PRICE
+*   4  QTY.ON.HAND
+*   5  REORDER.PT
+*   6  SUPPLIER
+*   7  WAREHOUSE.LOC
+* ============================================================
+
+SUBROUTINE CHECK.INVENTORY(INPUT.DATA, OUTPUT.DATA, STATUS)
+
+   VM = CHAR(253)
+
+   * ── Parse input ─────────────────────────────────────────
+   ITEM.ID = FIELD(INPUT.DATA, VM, 1)
+
+   IF ITEM.ID = "" THEN
+      STATUS = "ERROR:ITEM.ID is required"
+      RETURN
+   END
+
+   * ── Open INVENTORY file ─────────────────────────────────
+   OPEN "INVENTORY" TO INV.FILE ELSE
+      STATUS = "ERROR:Cannot open INVENTORY file"
+      RETURN
+   END
+
+   * ── Read record ──────────────────────────────────────────
+   READ INV.REC FROM INV.FILE, ITEM.ID ELSE
+      STATUS = "ERROR:Item ":ITEM.ID:" not found in inventory"
+      CLOSE INV.FILE
+      RETURN
+   END
+
+   CLOSE INV.FILE
+
+   * ── Extract fields ───────────────────────────────────────
+   I.DESC     = INV.REC<1>
+   I.CATEGORY = INV.REC<2>
+   I.PRICE    = INV.REC<3>
+   I.QTY      = INV.REC<4>
+   I.REORDER  = INV.REC<5>
+   I.SUPPLIER = INV.REC<6>
+   I.WH.LOC   = INV.REC<7>
+
+   * Default reorder point if not set
+   IF I.REORDER = "" THEN I.REORDER = "0"
+
+   * ── Pack output ──────────────────────────────────────────
+   OUTPUT.DATA = ITEM.ID    :VM:
+               : I.DESC     :VM:
+               : I.CATEGORY :VM:
+               : I.PRICE    :VM:
+               : I.QTY      :VM:
+               : I.REORDER  :VM:
+               : I.SUPPLIER :VM:
+               : I.WH.LOC
+
+   STATUS = "OK"
+   RETURN
+END

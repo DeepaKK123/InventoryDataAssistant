@@ -1,0 +1,77 @@
+* ============================================================
+* GET.CUSTOMER.INFO
+* ============================================================
+* Retrieve a single CUSTOMER record.
+*
+* Arguments:
+*   ARG(1) = INPUT.DATA   : [0]=CUST.ID
+*   ARG(2) = OUTPUT.DATA  : VM-delimited customer fields
+*   ARG(3) = STATUS       : "OK" or "ERROR:<message>"
+*
+* CUSTOMER record layout:
+*   1  NAME
+*   2  EMAIL
+*   3  PHONE
+*   4  ADDRESS
+*   5  CITY
+*   6  STATE
+*   7  ZIP
+*   8  CREDIT.LIMIT
+*   9  ACCOUNT.STATUS    (ACTIVE / SUSPENDED / CLOSED)
+* ============================================================
+
+SUBROUTINE GET.CUSTOMER.INFO(INPUT.DATA, OUTPUT.DATA, STATUS)
+
+   VM = CHAR(253)
+
+   * ── Parse input ─────────────────────────────────────────
+   CUST.ID = FIELD(INPUT.DATA, VM, 1)
+
+   IF CUST.ID = "" THEN
+      STATUS = "ERROR:CUST.ID is required"
+      RETURN
+   END
+
+   * ── Open CUSTOMER file ──────────────────────────────────
+   OPEN "CUSTOMER" TO CUST.FILE ELSE
+      STATUS = "ERROR:Cannot open CUSTOMER file"
+      RETURN
+   END
+
+   * ── Read record ──────────────────────────────────────────
+   READ CUST.REC FROM CUST.FILE, CUST.ID ELSE
+      STATUS = "ERROR:Customer ":CUST.ID:" not found"
+      CLOSE CUST.FILE
+      RETURN
+   END
+
+   CLOSE CUST.FILE
+
+   * ── Extract fields ───────────────────────────────────────
+   C.NAME         = CUST.REC<1>
+   C.EMAIL        = CUST.REC<2>
+   C.PHONE        = CUST.REC<3>
+   C.ADDRESS      = CUST.REC<4>
+   C.CITY         = CUST.REC<5>
+   C.STATE        = CUST.REC<6>
+   C.ZIP          = CUST.REC<7>
+   C.CREDIT.LIMIT = CUST.REC<8>
+   C.ACCT.STATUS  = CUST.REC<9>
+
+   IF C.ACCT.STATUS = "" THEN C.ACCT.STATUS = "ACTIVE"
+
+   * ── Pack output ──────────────────────────────────────────
+   OUTPUT.DATA = CUST.ID        :VM:
+               : C.NAME         :VM:
+               : C.EMAIL        :VM:
+               : C.PHONE        :VM:
+               : C.ADDRESS      :VM:
+               : C.CITY         :VM:
+               : C.STATE        :VM:
+               : C.ZIP          :VM:
+               : C.CREDIT.LIMIT :VM:
+               : C.ACCT.STATUS
+
+   STATUS = "OK"
+   RETURN
+END

@@ -1,0 +1,128 @@
+* ============================================================
+* UPDATE.INVENTORY
+* ============================================================
+* Adjust the Quantity On-Hand for an INVENTORY item and write
+* an audit trail entry to INVENTORY.AUDIT.
+*
+* Arguments:
+*   ARG(1) = INPUT.DATA  : VM-delimited
+*              [0] ITEM.ID
+*              [1] ADJUSTMENT  — signed integer (positive = add, negative = remove)
+*              [2] REASON      — e.g. RECEIPT / SALE / DAMAGE / RETURN / STOCKTAKE
+*   ARG(2) = OUTPUT.DATA : VM-delimited
+*              [0] ITEM.ID
+*              [1] OLD.QTY
+*              [2] NEW.QTY
+*              [3] STATUS.MSG
+*   ARG(3) = STATUS      : "OK" or "ERROR:<message>"
+* ============================================================
+
+SUBROUTINE UPDATE.INVENTORY(INPUT.DATA, OUTPUT.DATA, STATUS)
+
+   VM    = CHAR(253)
+   TODAY = DATE()
+   NOW   = TIME()
+
+   * ── Parse input ─────────────────────────────────────────
+   ITEM.ID    = FIELD(INPUT.DATA, VM, 1)
+   ADJUSTMENT = FIELD(INPUT.DATA, VM, 2)
+   REASON     = FIELD(INPUT.DATA, VM, 3)
+
+   IF ITEM.ID = "" THEN
+      STATUS = "ERROR:ITEM.ID is required"
+      RETURN
+   END
+
+   IF NOT(NUM(ADJUSTMENT)) THEN
+      STATUS = "ERROR:ADJUSTMENT must be a signed integer (e.g. 10 or -5)"
+      RETURN
+   END
+
+   IF REASON = "" THEN REASON = "UNSPECIFIED"
+   REASON = OCONV(REASON, "MCU")
+
+   VALID.REASONS = "RECEIPT,SALE,DAMAGE,RETURN,STOCKTAKE,UNSPECIFIED,ADJUSTMENT"
+   IF NOT(INDEX(VALID.REASONS, REASON, 1)) THEN
+      STATUS = "ERROR:Invalid REASON '":REASON:"'. Use: ":VALID.REASONS
+      RETURN
+   END
+
+   * ── Open INVENTORY file ─────────────────────────────────
+   OPEN "INVENTORY" TO INV.FILE ELSE
+      STATUS = "ERROR:Cannot open INVENTORY file"
+      RETURN
+   END
+
+   * ── Read existing record ─────────────────────────────────
+   READ INV.REC FROM INV.FILE, ITEM.ID ELSE
+      STATUS = "ERROR:Item ":ITEM.ID:" not found in INVENTORY"
+      CLOSE INV.FILE
+      RETURN
+   END
+
+   OLD.QTY = INV.REC<4>
+   IF OLD.QTY = "" OR NOT(NUM(OLD.QTY)) THEN OLD.QTY = 0
+
+   * ── Calculate new quantity ───────────────────────────────
+   NEW.QTY = OLD.QTY + ADJUSTMENT
+
+   * Prevent negative stock (warn but allow override via STOCKTAKE)
+   IF NEW.QTY < 0 AND REASON # "STOCKTAKE" THEN
+      STATUS = "ERROR:Adjustment would result in negative stock ":
+             : "(on_hand=":OLD.QTY:" adjustment=":ADJUSTMENT:"). ":
+             : "Use reason STOCKTAKE to force."
+      CLOSE INV.FILE
+      RETURN
+   END
+
+   * Allow negative only for STOCKTAKE (correction scenario)
+   IF NEW.QTY < 0 THEN NEW.QTY = 0
+
+   * ── Write updated record ────────────────────────────────
+   INV.REC<4> = NEW.QTY
+   WRITE INV.REC TO INV.FILE, ITEM.ID
+
+   CLOSE INV.FILE
+
+   * ── Write audit trail ───────────────────────────────────
+   * INVENTORY.AUDIT key = ITEM.ID*DATE*TIME (ensures uniqueness)
+   OPEN "INVENTORY.AUDIT" TO AUDIT.FILE ELSE
+      * Non-fatal — log the failure but continue
+      PRINT "WARNING: Cannot open INVENTORY.AUDIT — audit entry skipped"
+      GOTO SKIP.AUDIT
+   END
+
+   AUDIT.KEY = ITEM.ID:"*":OCONV(TODAY,"D4/"):"*":OCONV(NOW,"MTS")
+   AUDIT.REC = ""
+   AUDIT.REC<1> = ITEM.ID
+   AUDIT.REC<2> = OCONV(TODAY, "D4/")
+   AUDIT.REC<3> = OCONV(NOW, "MTS")
+   AUDIT.REC<4> = REASON
+   AUDIT.REC<5> = OLD.QTY
+   AUDIT.REC<6> = ADJUSTMENT
+   AUDIT.REC<7> = NEW.QTY
+
+   WRITE AUDIT.REC TO AUDIT.FILE, AUDIT.KEY
+   CLOSE AUDIT.FILE
+
+SKIP.AUDIT:
+
+   * ── Build status message ────────────────────────────────
+   IF ADJUSTMENT >= 0 THEN
+      DIRECTION = "increased by ":ADJUSTMENT
+   END ELSE
+      DIRECTION = "decreased by ":ABS(ADJUSTMENT)
+   END
+
+   STATUS.MSG = "Qty for ":ITEM.ID:" ":DIRECTION:
+              : " (":OLD.QTY:" -> ":NEW.QTY:") Reason: ":REASON
+
+   * ── Pack output ──────────────────────────────────────────
+   OUTPUT.DATA = ITEM.ID    :VM:
+               : OLD.QTY    :VM:
+               : NEW.QTY    :VM:
+               : STATUS.MSG
+
+   STATUS = "OK"
+   RETURN
+END
